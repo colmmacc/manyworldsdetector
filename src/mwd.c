@@ -4,26 +4,29 @@
 
 #include "mwd.h"
 
-static __thread void *zeroed_when_copied;
+/* This value is always one and we leave it alone */
+static int one = 1;
+
+/* We set up a page that will be zeroed on fork() */
+static void *zeroed_when_copied_page = NULL;
+
+/* Our thread-local sentinel. It's initialized to &one so that new threads can be detected.*/
+static __thread void *zeroed_when_copied = &one;
 
 static void mwd_on_fork()
 {
     *(int *) zeroed_when_copied = 0;
 }
 
-/*
-** Reset the many worlds detector
-*/
-void mwd_reset(void)
+static void mwd_pivot()
 {
-    *(int *) zeroed_when_copied = 1;
+    /* Be ready to detect */
+    *(int *) zeroed_when_copied_page = 1;
+
+    /* Pivot from &one to our magic page */
+    zeroed_when_copied = zeroed_when_copied_page;
 }
 
-/*
-** Initialize the many worlds detector
-**
-** @return 0 on success, -1 on failure to initialize
-**/
 int mwd_init(void)
 {
     long pagesize = sysconf(_SC_PAGESIZE);
@@ -31,24 +34,22 @@ int mwd_init(void)
         return -1;
     }
 
-    if (posix_memalign(&zeroed_when_copied, pagesize, pagesize) != 0) {
+    if (posix_memalign(&zeroed_when_copied_page, pagesize, pagesize) != 0) {
         return -1;
     }
-
-    mwd_reset();
 
     int success = -1;
 
 #if defined(MADV_WIPEONFORK)
     /* Linux: Set the memory to be zeroed by the kernel or hypervisor */
-    if (madvise(zeroed_when_copied, pagesize, MADV_WIPEONFORK) == 0) {
+    if (madvise(zeroed_when_copied_page, pagesize, MADV_WIPEONFORK) == 0) {
         success = 0;
     }
 #endif
 
 #if defined(MAP_INHERIT_ZERO)
     /* BSD: Set the memory not to be inheritable */
-    if (minherit(zeroed_when_copied, pagesize, MAP_INHERIT_ZERO) == 0) {
+    if (minherit(zeroed_when_copied_page, pagesize, MAP_INHERIT_ZERO) == 0) {
         success = 0;
     }
 #endif
@@ -58,15 +59,30 @@ int mwd_init(void)
         success = 0;
     }
 
+    mwd_pivot();
+
     return success;
 }
 
-/*
-** Has a universe split occured?
-**
-** @return true if we're in a new universe. Otherwise return false.
-*/
-bool mwd_cloned(void)
+mwd_defend_t mwd_defend(mwd_callback callback, void *ctx, int *ret)
 {
-    return (*(int *) zeroed_when_copied == 0);
+    if (zeroed_when_copied_page == NULL) {
+        return MWD_NOT_INITIALIZED;
+    }
+
+    if (*(int *) zeroed_when_copied == 1) {
+        return MWD_NO_ACTION;
+    }
+
+    /* We're in either a new thread or a new process, so call the callback */
+    *ret = callback(ctx);
+
+    if (zeroed_when_copied == &one) {
+        mwd_pivot();
+        return MWD_NEW_THREAD;
+    }
+
+    mwd_pivot();
+
+    return MWD_NEW_PROCESS;
 }
