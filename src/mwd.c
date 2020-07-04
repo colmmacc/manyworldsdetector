@@ -4,26 +4,26 @@
 
 #include "mwd.h"
 
-/* This value is always one and we leave it alone */
-static int one = 1;
+/* This value is always zero and we leave it alone */
+static int zero = 0;
 
 /* We set up a page that will be zeroed on fork() */
 static void *zeroed_when_copied_page = NULL;
 
-/* Our thread-local sentinel. It's initialized to &one so that new threads can be detected.*/
-static __thread void *zeroed_when_copied = &one;
+/* Our thread-local sentinel. It's initialized to &zero so that new threads can be detected.*/
+static __thread void *zeroed_when_copied = &zero;
 
 static void mwd_on_fork()
 {
     *(int *) zeroed_when_copied = 0;
 }
 
-static void mwd_pivot()
+static void mwd_reset()
 {
     /* Be ready to detect */
     *(int *) zeroed_when_copied_page = 1;
 
-    /* Pivot from &one to our magic page */
+    /* Pivot from &zero to our magic page */
     zeroed_when_copied = zeroed_when_copied_page;
 }
 
@@ -59,12 +59,12 @@ int mwd_init(void)
         success = 0;
     }
 
-    mwd_pivot();
+    mwd_reset();
 
     return success;
 }
 
-mwd_defend_t mwd_defend(mwd_callback callback, void *ctx, int *ret)
+mwd_reason_t mwd_defend(mwd_callback callback, void *ctx, int *ret)
 {
     if (zeroed_when_copied_page == NULL) {
         return MWD_NOT_INITIALIZED;
@@ -74,15 +74,15 @@ mwd_defend_t mwd_defend(mwd_callback callback, void *ctx, int *ret)
         return MWD_NO_ACTION;
     }
 
-    /* We're in either a new thread or a new process, so call the callback */
-    *ret = callback(ctx);
-
-    if (zeroed_when_copied == &one) {
-        mwd_pivot();
-        return MWD_NEW_THREAD;
+    mwd_reason_t reason = MWD_NEW_PROCESS;
+    if (zeroed_when_copied == &zero) {
+        reason = MWD_NEW_THREAD;
     }
 
-    mwd_pivot();
+    /* We're in either a new thread or a new process, so call the callback */
+    *ret = callback(reason, ctx);
 
-    return MWD_NEW_PROCESS;
+    mwd_reset();
+
+    return reason;
 }
