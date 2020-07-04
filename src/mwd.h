@@ -1,14 +1,11 @@
 #pragma once
 
-#include <stdbool.h>
-
 /*
 ** Initialize the many worlds detector
 **
 ** @return 0 on success, -1 on failure to initialize
 */
 extern int mwd_init(void);
-
 
 typedef enum {
     MWD_NOT_INITIALIZED = -1,
